@@ -1,68 +1,68 @@
-import os
-import torch
 import streamlit as st
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import pandas as pd
+import json
+import pickle
+from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import RandomForestClassifier
 
-MODEL_NAME = "gpt2"
-OUTPUT_FILE = "synthetic_data.txt"
-PROMPT = "Generate synthetic data for detection of malware and running high memory apps on background:"
-NUM_SAMPLES = 100  # Number of synthetic data samples to generate
-MAX_LENGTH = 512  # Maximum length of the generated text
-
-# Load the model and tokenizer
-@st.cache_resource
-def load_model_and_tokenizer():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
-    return tokenizer, model
-
-def generate_synthetic_data(tokenizer, model, prompt, num_samples, max_length):
-    synthetic_data = []
-    inputs = tokenizer(prompt, return_tensors="pt")
+# Load the model and encoders
+@st.cache(allow_output_mutation=True)
+def load_model():
+    # Load the trained model
+    with open('trained_model.pkl', 'rb') as model_file:
+        model = pickle.load(model_file)
     
-    for _ in range(num_samples):
-        outputs = model.generate(
-            inputs["input_ids"],
-            max_length=max_length,
-            num_return_sequences=1,
-            do_sample=True,
-            top_p=0.95,
-            temperature=0.7
-        )
-        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        synthetic_data.append(generated_text)
+    # Load the label encoders for location and device
+    with open('label_encoders.json', 'r') as encoders_file:
+        label_encoders = json.load(encoders_file)
     
-    return synthetic_data
+    return model, label_encoders
 
-def save_data_to_file(data, filename):
-    with open(filename, 'w') as file:
-        for line in data:
-            file.write(line + '\n')
+# Preprocess the user input
+def preprocess_input(timestamp, location, device, label_encoders):
+    location_encoder = LabelEncoder()
+    device_encoder = LabelEncoder()
 
+    # Set the classes_ attribute with proper format (numpy array)
+    location_encoder.classes_ = pd.Index(label_encoders['location']).to_numpy()
+    device_encoder.classes_ = pd.Index(label_encoders['device']).to_numpy()
+
+    # Encode location and device using loaded encoders
+    encoded_location = location_encoder.transform([location])[0]
+    encoded_device = device_encoder.transform([device])[0]
+
+    return pd.DataFrame({
+        'timestamp': [timestamp],
+        'location': [encoded_location],
+        'device': [encoded_device]
+    })
+
+# Streamlit UI
 def main():
-    st.title("Synthetic Data Generator")
-    
-    # Input fields in Streamlit
-    prompt = st.text_area("Enter the prompt:", PROMPT)
-    num_samples = st.number_input("Number of samples to generate:", value=NUM_SAMPLES, min_value=1)
-    max_length = st.slider("Max length of generated text:", min_value=1, max_value=1024, value=MAX_LENGTH)
-    
-    if st.button("Generate Data"):
-        st.write("Loading model and tokenizer...")
-        tokenizer, model = load_model_and_tokenizer()
+    st.title("Login Activity Detection")
+
+    st.write("Enter login details to check if the activity is unusual:")
+
+    # User inputs
+    timestamp = st.slider("Timestamp (Hour)", 0, 23, 12)
+    location = st.selectbox("Location", ["US", "Europe", "Asia", "Africa", "Australia"])
+    device = st.selectbox("Device", ["Desktop", "Mobile", "Tablet"])
+
+    if st.button("Check Activity"):
+        # Load the model and encoders
+        model, label_encoders = load_model()
+
+        # Preprocess the input
+        input_data = preprocess_input(timestamp, location, device, label_encoders)
         
-        st.write("Generating synthetic data...")
-        data = generate_synthetic_data(tokenizer, model, prompt, num_samples, max_length)
-        
-        # Display the data
-        st.subheader("Generated Data")
-        for i, line in enumerate(data, 1):
-            st.text(f"{i}: {line}")
-        
-        # Save the data and provide a download link
-        save_data_to_file(data, OUTPUT_FILE)
-        st.success(f"Generated data has been saved to {OUTPUT_FILE}")
-        st.download_button("Download Synthetic Data", data="\n".join(data), file_name=OUTPUT_FILE)
+        # Predict if the login is unusual or not
+        prediction = model.predict(input_data)[0]
+
+        # Display the result
+        if prediction == 1:
+            st.error("This login activity is unusual!")
+        else:
+            st.success("This login activity seems normal.")
 
 if __name__ == "__main__":
     main()
